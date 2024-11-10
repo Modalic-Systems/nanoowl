@@ -20,6 +20,8 @@ import PIL.Image
 import subprocess
 import tempfile
 import os
+from time import time
+
 from torchvision.ops import roi_align
 from transformers.models.owlvit.modeling_owlvit import OwlViTForObjectDetection
 from transformers.models.owlvit.processing_owlvit import OwlViTProcessor
@@ -83,7 +85,8 @@ def _owl_normalize_grid_corner_coordinates(num_patches_per_side):
     box_coordinates = box_coordinates.reshape(
         box_coordinates.shape[0] * box_coordinates.shape[1], box_coordinates.shape[2]
     )
-    box_coordinates = torch.from_numpy(box_coordinates)
+  
+    box_coordinates = torch.tensor(box_coordinates, dtype=torch.float32)
 
     return box_coordinates
 
@@ -252,10 +255,8 @@ class OwlPredictor(torch.nn.Module):
             mask_x = (self.mesh_grid[1][None, ...] > pad_x[..., None, None]) & (self.mesh_grid[1][None, ...] < (1. - pad_x[..., None, None]))
             mask_y = (self.mesh_grid[0][None, ...] > pad_y[..., None, None]) & (self.mesh_grid[0][None, ...] < (1. - pad_y[..., None, None]))
             mask = (mask_x & mask_y)
-
         # extract rois
         roi_images = roi_align(image, [rois], output_size=self.get_image_size())
-
         # mask rois
         if pad_square:
             roi_images = (roi_images * mask[:, None, :, :])
@@ -263,9 +264,7 @@ class OwlPredictor(torch.nn.Module):
         return roi_images, rois
     
     def encode_rois(self, image: torch.Tensor, rois: torch.Tensor, pad_square: bool = True, padding_scale: float=1.0):
-        # with torch_timeit_sync("extract rois"):
         roi_images, rois = self.extract_rois(image, rois, pad_square, padding_scale)
-        # with torch_timeit_sync("encode images"):
         output = self.encode_image(roi_images)
         pred_boxes = _owl_box_roi_to_box_global(output.pred_boxes, rois[:, None, :])
         output.pred_boxes = pred_boxes
@@ -303,10 +302,9 @@ class OwlPredictor(torch.nn.Module):
         mask = masks[0]
         for mask_t in masks[1:]:
             mask = torch.logical_or(mask, mask_t)
-
+        
         input_indices = torch.arange(0, num_input_images, dtype=labels.dtype, device=labels.device)
         input_indices = input_indices[:, None].repeat(1, self.num_patches)
-
         return OwlDecodeOutput(
             labels=labels[mask],
             scores=scores[mask],
@@ -445,8 +443,17 @@ class OwlPredictor(torch.nn.Module):
         args.append(f"--onnx={onnx_path}")
         args.append(f"--saveEngine={engine_path}")
 
-        if fp16_mode:
-            args += ["--fp16"]
+        # if fp16_mode:
+        #     args += ["--fp16"]
+        args += [
+            "--useCudaGraph", 
+            "--explicitBatch", 
+            "--heuristic",
+            "--best",
+            "--exposeDMA",
+            "--useSpinWait"
+        ]
+
 
         args += [f"--shapes=image:1x3x{self.image_size}x{self.image_size}"]
 
@@ -456,21 +463,38 @@ class OwlPredictor(torch.nn.Module):
 
     def predict(self, 
             image: PIL.Image, 
-            text: List[str], 
-            text_encodings: Optional[OwlEncodeTextOutput],
+            text: Optional[List[str]]=None, 
+            text_encodings: Optional[OwlEncodeTextOutput]=None,
             threshold: Union[int, float, List[Union[int, float]]] = 0.1,
             pad_square: bool = True,
             
         ) -> OwlDecodeOutput:
 
-        image_tensor = self.image_preprocessor.preprocess_pil_image(image)
-
+        if isinstance(image, PIL.Image.Image):
+            image_tensor = self.image_preprocessor.preprocess_pil_image(image)
+        elif isinstance(image, torch.Tensor):
+            image_tensor = image
+        
         if text_encodings is None:
             text_encodings = self.encode_text(text)
 
+        t0 = time()
         rois = torch.tensor([[0, 0, image.width, image.height]], dtype=image_tensor.dtype, device=image_tensor.device)
-
         image_encodings = self.encode_rois(image_tensor, rois, pad_square=pad_square)
-
-        return self.decode(image_encodings, text_encodings, threshold)
-
+        detections = self.decode(image_encodings, text_encodings, threshold)
+        print(f"Inference time: {time() - t0} ")
+        return detections
+    
+    def get_detections(
+        self,
+        image_tensor: torch.Tensor,
+        text_encodings: OwlEncodeTextOutput,
+        threshold: Union[int, float, List[Union[int, float]]] = 0.1,
+        pad_square: bool = False,
+    ) -> OwlDecodeOutput:
+        width, height = image_tensor.shape[-1], image_tensor.shape[-2]
+        rois = torch.tensor([[0, 0, width, height]], dtype=image_tensor.dtype, device=image_tensor.device)
+        image_encodings = self.encode_rois(image_tensor, rois, pad_square=pad_square)
+        detections = self.decode(image_encodings, text_encodings, threshold)
+        return detections
+    

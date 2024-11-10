@@ -13,7 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import argparse
 import PIL.Image
 import time
@@ -29,8 +28,8 @@ from nanoowl.owl_drawing import (
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image", type=str, default="../assets/owl_glove_small.jpg")
-    parser.add_argument("--prompt", type=str, default="[an owl, a glove]")
+    parser.add_argument("--image", type=str, default="/flint/flint/nanoowl/data/truck.jpg") # d##efault="../assets/owl_glove_small.jpg")
+    parser.add_argument("--prompt", type=str, default="[a truck, a person]")
     parser.add_argument("--threshold", type=str, default="0.1,0.1")
     parser.add_argument("--output", type=str, default="../data/owl_predict_out.jpg")
     parser.add_argument("--model", type=str, default="google/owlvit-base-patch32")
@@ -56,18 +55,19 @@ if __name__ == "__main__":
         args.model,
         image_encoder_engine=args.image_encoder_engine
     )
-
     image = PIL.Image.open(args.image)
-    
+    t0 = time.time()
     text_encodings = predictor.encode_text(text)
-
-    output = predictor.predict(
-        image=image, 
-        text=text, 
-        text_encodings=text_encodings,
-        threshold=thresholds,
-        pad_square=False
-    )
+    print("Text encoding time: ", time.time() - t0)
+    for i in range(10):
+        output = predictor.predict(
+            image=image, 
+            text=text, 
+            text_encodings=text_encodings,
+            threshold=thresholds,
+            pad_square=False
+        )
+        breakpoint()
 
     if args.profile:
         torch.cuda.current_stream().synchronize()
@@ -84,7 +84,8 @@ if __name__ == "__main__":
         t1 = time.perf_counter_ns()
         dt = (t1 - t0) / 1e9
         print(f"PROFILING FPS: {args.num_profiling_runs/dt}")
-
-    image = draw_owl_output(image, output, text=text, draw_text=True)
-
-    image.save(args.output)
+    from pathlib import Path
+    image = draw_owl_output(image, output , text=text, draw_text=True)
+    path = args.output.replace(".jpg", str(Path(args.image_encoder_engine).stem) + ".jpg")
+    print(path)
+    image.save(path)

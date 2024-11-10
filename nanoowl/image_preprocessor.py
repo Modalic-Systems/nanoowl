@@ -40,7 +40,6 @@ DEFAULT_IMAGE_PREPROCESSOR_STD = [
     0.27577711 * 255.
 ]
 
-
 class ImagePreprocessor(torch.nn.Module):
     def __init__(self,
             mean: Tuple[float, float, float] = DEFAULT_IMAGE_PREPROCESSOR_MEAN,
@@ -56,9 +55,8 @@ class ImagePreprocessor(torch.nn.Module):
             "std",
             torch.tensor(std)[None, :, None, None]
         )
-
+        
     def forward(self, image: torch.Tensor, inplace: bool = False):
-
         if inplace:
             image = image.sub_(self.mean).div_(self.std)
         else:
@@ -68,8 +66,10 @@ class ImagePreprocessor(torch.nn.Module):
     
     @torch.no_grad()
     def preprocess_pil_image(self, image: PIL.Image.Image):
-        image = torch.from_numpy(np.asarray(image))
+        array = np.asarray(image).astype(np.float32)
+        print("array shape: ", array.shape)
+        image = torch.tensor(array, dtype=torch.float32, device=self.mean.device)
+        print("image shape: ", image.shape)
         image = image.permute(2, 0, 1)[None, ...]
-        image = image.to(self.mean.device)
-        image = image.type(self.mean.dtype)
+        print("image shape: ", image.shape)
         return self.forward(image, inplace=True)
